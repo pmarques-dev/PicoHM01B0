@@ -195,12 +195,13 @@ void PicoHM01B0::calc_optimal_length(void)
 
 	if (binning_2x2) {
 		min_line_length = 215;
-		min_line_count = qvga_mode ? 128 : 172;  // 172 not in datasheet, measured...
+		//min_line_count = qvga_mode ? 128 : 172;  // 172 not in datasheet, measured...
+		min_line_count = qvga_mode ? 172 : 172;  // 172 not in datasheet, measured...
 	} else {
-		//min_line_length = 376;	// min measured 369
-		//min_line_count = qvga_mode ? 260 : 344; // min measured 340
-		min_line_length = 369;	// min measured 369
-		min_line_count = qvga_mode ? 260 : 340; // min measured 340
+		min_line_length = 376;	// min measured 369
+		min_line_count = qvga_mode ? 260 : 344; // min measured 340
+		//min_line_length = 369;	// min measured 369
+		//min_line_count = qvga_mode ? 260 : 340; // min measured 340
 	}
 
 	// if we have a MCLK pin, it means we are generating the clock and it's
@@ -470,7 +471,7 @@ void PicoHM01B0::set_auto_exposure(void)
 	i2c_write_reg(0x2100, 0x01); // AE enable
 }
 
-void PicoHM01B0::start_streaming(float frame_rate, bool binning_2x2, bool qvga)
+void PicoHM01B0::start_streaming(float frame_rate, bool binning_2x2, bool qvga_mode)
 {
 	this->frame_rate = frame_rate;
 	this->binning_2x2 = binning_2x2;

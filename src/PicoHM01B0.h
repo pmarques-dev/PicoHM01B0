@@ -9,7 +9,7 @@ TODO
 
    - test all 4 resolutions
 
-   - keep track of the object state: unint, stopped, streaming, capturing
+   - keep track of the object state: not initted, stopped, streaming, capturing
      - make sure the functions only try to do things in the right states
 */
 

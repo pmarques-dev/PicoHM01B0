@@ -16,7 +16,7 @@ table with resolutions:
 | false | false | 324 | 324 |
 | false | true | 324 | 244 |
 | true | false | 164 | 162 |
-| true | true | 164 | 81 |
+| true | true | 164 | 122 |
 
 
 
