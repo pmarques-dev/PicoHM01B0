@@ -8,15 +8,6 @@
 #include <string.h>
 #include "hardware/pio.h"
 
-/*
-TODO:
-   - support 4 bit bus mode
-
-   - change the start_capture function to move the "wait for sync" loop to the
-     PIO and restart the PIO code. That way the function can return immediately,
-     even if it's in the middle of a frame
-*/
-
 
 struct sensor_reg;	// forward declaration
 
@@ -35,7 +26,7 @@ public:
 	uint mclk_freq;
 
 	// bus width: true for a 4 bit bus, false for 1 bit
-	bool bus_4bit; //TODO
+	bool bus_4bit;
 
 	// image orientation
 	bool flip_horizontal, flip_vertical;
@@ -59,16 +50,21 @@ public:
 	// auto exposure
 	void start_streaming(float frame_rate, bool binning_2x2, bool qvga_mode);
 
-	// start capturing a frame. This waits for the vertical sync to start
-	// capturing. The code uses DMA to do the transfer, so the function
-	// returns immediately. If the code is in a loop calling wait_for_frame,
-	// do some processing and call start_capture again, if the processing
-	// takes less time than the vertical blanking time, you get the full
-	// frame rate. Alternatively, if there are 2 buffers, the code can
-	// alternate between them and as soon as wait_for_frame returns for
-	// buffer 0 start capture can be immediately called for buffer 1 while
-	// buffer 0 is being processed.
+	// start capturing a frame. The function returns immediately, but the
+	// PIO code waits for the vertical sync to start capturing and then uses
+	// DMA to do the actual transfer, so the mcy is free to run other code
+	// while the frame is being transferred. If the code is in a loop
+	// calling wait_for_frame, do some processing and call start_capture
+	// again, if the processing takes less time than the vertical blanking
+	// time, the full frame rate is achieved. Alternatively, if there are 2
+	// buffers, the code can alternate between them and as soon as
+	// wait_for_frame returns for buffer 0 start capture can be immediately
+	// called for buffer 1 while buffer 0 is being processed.
 	void start_capture(uint8_t *dest);
+
+	// non-blocking call to check if the frame that is being currently
+	// transferred is already finished
+	bool is_frame_ready(void);
 
 	// blocks waiting for the completion of a previous call to start_capture
 	void wait_for_frame(void);

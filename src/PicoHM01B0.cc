@@ -56,20 +56,27 @@ static void clock_program_init(PIO pio, uint sm, uint offset, uint pin_base)
 // ------------------------------
 //     image PIO
 
-#define image_wrap_target 0
-#define image_wrap 2
+#define image_wrap_target 1
+#define image_wrap 3
 
 static uint16_t image_program_instructions[] = {
+	0x2010, //  0: wait   0 gpio, 16
 		//     .wrap_target
-	0x208E, //  0: wait   1 gpio, 14
-	0x4001, //  1: in     pins, 1
-	0x200E, //  2: wait   0 gpio, 14
+	0x208E, //  1: wait   1 gpio, 14
+	0x4001, //  2: in     pins, 1
+	0x200E, //  3: wait   0 gpio, 14
 		//     .wrap
 };
 
+//  0: wait   0 gpio, 16
+//  1: wait   1 gpio, 14
+//  2: in     pins, 1
+//  3: wait   0 gpio, 14
+
+
 static const struct pio_program image_program = {
 	.instructions = image_program_instructions,
-	.length = 3,
+	.length = 4,
 	.origin = -1,
 };
 
@@ -80,12 +87,16 @@ static inline pio_sm_config image_program_get_default_config(uint offset)
 	return c;
 }
 
-static uint image_program_init(PIO *pio, uint *sm, uint *offset, uint pin_d0, int pin_pclk)
+static uint image_program_init(PIO *pio, uint *sm, uint *offset, uint pin_d0, int pin_pclk, int pin_vsync, int bus4bit)
 {
+	int bus_bits = bus4bit ? 4 : 1;
+
 	// to set the PCLK pin independently of the d0 pin, we need to
 	// dynamically re-write the PIO code
-	image_program_instructions[0] = 0x2080 | pin_pclk;
-	image_program_instructions[2] = 0x2000 | pin_pclk;
+	image_program_instructions[0] = 0x2000 | pin_vsync;	//  0: wait   0 gpio, pin_vsync
+	image_program_instructions[1] = 0x2080 | pin_pclk;	//  1: wait   1 gpio, pin_pclk
+	image_program_instructions[2] = 0x4000 | bus_bits;	//  2: in     pins, bus_bits
+	image_program_instructions[3] = 0x2000 | pin_pclk;	//  3: wait   0 gpio, pin_pclk
 
 	// we need to use a new program for each instance, because the code is
 	// configured specifically for the PCLK pin passed
@@ -93,9 +104,11 @@ static uint image_program_init(PIO *pio, uint *sm, uint *offset, uint pin_d0, in
 		return 0;
 
 	pio_gpio_init(*pio, pin_d0);
-	pio_sm_set_consecutive_pindirs(*pio, *sm, pin_d0, 1, false);
+	pio_sm_set_consecutive_pindirs(*pio, *sm, pin_d0, bus_bits, false);
 	pio_gpio_init(*pio, pin_pclk);
 	pio_sm_set_consecutive_pindirs(*pio, *sm, pin_pclk, 1, false);
+	pio_gpio_init(*pio, pin_vsync);
+	pio_sm_set_consecutive_pindirs(*pio, *sm, pin_vsync, 1, false);
 
 	pio_sm_config c = image_program_get_default_config(*offset);
 	sm_config_set_in_pins(&c, pin_d0);
@@ -408,7 +421,7 @@ int PicoHM01B0::begin(const PicoHM01B0_config &config)
 	}
 
 	// allocate the PIO code to transfer image data
-	if (!image_program_init(&data_pio, &data_pio_sm, &data_pio_offset, config.d0_gpio, config.pclk_gpio)) {
+	if (!image_program_init(&data_pio, &data_pio_sm, &data_pio_offset, config.d0_gpio, config.pclk_gpio, config.vsync_gpio, config.bus_4bit)) {
 		if (config.mclk_gpio >= 0)
 			pio_remove_program_and_unclaim_sm(&clock_program, clock_pio, clock_pio_sm, clock_pio_offset);
 		return 0;
@@ -416,6 +429,10 @@ int PicoHM01B0::begin(const PicoHM01B0_config &config)
 
 	// allocate DMA channel dynamically
 	dma_channel = dma_claim_unused_channel(true);
+
+	// set up the pins that are not set up by either the PIO code or i2c
+	gpio_init(config.vsync_gpio);
+	gpio_set_dir(config.vsync_gpio, GPIO_IN);
 
 	// set the i2c pins as outputs by default, both pins at level high (idle)
 	gpio_init(config.i2c_clk_gpio);
@@ -534,13 +551,42 @@ void PicoHM01B0::start_capture(uint8_t *dest)
 
 	dma_channel_configure(dma_channel, &c, dest, &(data_pio->rxf[data_pio_sm]), image_buf_size, false);
 
-	// wait for vsync to be low to start acquiring a new frame
-	do { } while (gpio_get(config.vsync_gpio) == true);
+	// prepare the PIO to restart
+	pio_sm_restart(data_pio, data_pio_sm);
+	pio_sm_clkdiv_restart(data_pio, data_pio_sm);
+	pio_sm_exec(data_pio, data_pio_sm, pio_encode_jmp(data_pio_offset));
 
+	// start the DMA channel while the PIO is disabled
 	dma_channel_start(dma_channel);
+
+	// start the PIO code: the code first waits for vsync and then starts
+	// capturing using a gated clock, so the transfer will only finish at
+	// the end of the next full frame, if this is started in the middel of a
+	// frame transfer
 	pio_sm_set_enabled(data_pio, data_pio_sm, true);
 
 	state = STATE_CAPTURING;
+}
+
+bool PicoHM01B0::is_frame_ready(void)
+{
+	// we can only wait for a frame if we are capturing one. We return true
+	// here so that, if this method is called in a loop, even after it
+	// returns true once and we change the state to signal stop capturing,
+	// we continue returning true after that. Also it avoids having the main
+	// code waiting for a frame that will never arrive, so it's safer
+	if (state != STATE_CAPTURING)
+		return true;
+
+	// the frame is ready if the DMA channel is not busy any more
+	bool ret = !dma_channel_is_busy(dma_channel);
+
+	// if the frame is ready, call "wait_for_frame" to do the standard end
+	// of frame operations
+	if (ret)
+		wait_for_frame();
+
+	return ret;
 }
 
 void PicoHM01B0::wait_for_frame(void)
