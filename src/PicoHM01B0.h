@@ -52,7 +52,7 @@ public:
 
 	// start capturing a frame. The function returns immediately, but the
 	// PIO code waits for the vertical sync to start capturing and then uses
-	// DMA to do the actual transfer, so the mcy is free to run other code
+	// DMA to do the actual transfer, so the mcu is free to run other code
 	// while the frame is being transferred. If the code is in a loop
 	// calling wait_for_frame, do some processing and call start_capture
 	// again, if the processing takes less time than the vertical blanking
@@ -82,13 +82,13 @@ public:
 	void set_auto_exposure(void);
 
 
-	float get_actual_frame_rate_fps(void) {
+	float get_actual_frame_rate_fps(void) const {
 		return actual_frame_rate;
 	}
-	float get_transfer_period_ms(void) {
+	float get_transfer_period_ms(void) const {
 		return 1000.0 * (line_length * get_rows()) / (config.mclk_freq / 8);
 	}
-	float get_blanking_period_ms(void) {
+	float get_blanking_period_ms(void) const {
 		return 1000.0 * (line_length * (line_count - get_rows())) / (config.mclk_freq / 8);
 	}
 
@@ -104,13 +104,14 @@ public:
 	// these methods return the actual lengths set by the initialization
 	// code to achieve the frame rate requested (and the actual rate). They
 	// should usually not be needed, except for debug purposes
-	int get_line_length(void) {
+	int get_line_length(void) const {
 		return line_length;
 	}
-	int get_line_count(void) {
+	int get_line_count(void) const {
 		return line_count;
 	}
 
+	// the constructor only initializes the "state" field
 	PicoHM01B0() {
 		state = STATE_RESET;
 	}
