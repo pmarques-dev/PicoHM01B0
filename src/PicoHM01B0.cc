@@ -1,3 +1,5 @@
+#ifdef ARDUINO_ARCH_RP2040
+
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -395,10 +397,6 @@ int PicoHM01B0::begin(const PicoHM01B0_config &config)
 	if (state != STATE_RESET)
 		return 0;
 
-	// the object stores the pio numbers and not instances, so we just need
-	// temporary instances in this function
-	PIO clock_pio, data_pio;
-
 	// save a copy of the configuration
 	this->config = config;
 
@@ -407,7 +405,6 @@ int PicoHM01B0::begin(const PicoHM01B0_config &config)
 		if (!pio_claim_free_sm_and_add_program(&clock_program, &clock_pio, &clock_pio_sm, &clock_pio_offset))
 			return 0;
 		clock_program_init(clock_pio, clock_pio_sm, clock_pio_offset, config.mclk_gpio);
-		clock_pio_idx = PIO_NUM(clock_pio);
 	}
 
 	// allocate the PIO code to transfer image data
@@ -416,7 +413,6 @@ int PicoHM01B0::begin(const PicoHM01B0_config &config)
 			pio_remove_program_and_unclaim_sm(&clock_program, clock_pio, clock_pio_sm, clock_pio_offset);
 		return 0;
 	}
-	data_pio_idx = PIO_NUM(data_pio);
 
 	// allocate DMA channel dynamically
 	dma_channel = dma_claim_unused_channel(true);
@@ -530,7 +526,6 @@ void PicoHM01B0::start_capture(uint8_t *dest)
 	const uint32_t image_buf_size = (get_rows() * get_cols()) / 4;
 
 	// setup the DMA transfer
-	const PIO data_pio = PIO_INSTANCE(data_pio_idx);
 	dma_channel_config c = dma_channel_get_default_config(dma_channel);
 	channel_config_set_read_increment(&c, false);
 	channel_config_set_write_increment(&c, true);
@@ -557,7 +552,11 @@ void PicoHM01B0::wait_for_frame(void)
 	// wait for DMA to finish
 	dma_channel_wait_for_finish_blocking(dma_channel);
 	// disable the image transfer PIO
-	pio_sm_set_enabled(PIO_INSTANCE(data_pio_idx), data_pio_sm, false);
+	pio_sm_set_enabled(data_pio, data_pio_sm, false);
 
 	state = STATE_STREAMING;
 }
+
+#else // ARCH
+#error PicoEncoder library requires a PIO peripheral and only works on the RP2040 architecture
+#endif

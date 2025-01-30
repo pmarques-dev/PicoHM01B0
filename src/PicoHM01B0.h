@@ -1,16 +1,20 @@
 #ifndef PicoHM01B0_H
 #define PicoHM01B0_H
 
+#include <Arduino.h>
+
+#ifdef ARDUINO_ARCH_RP2040
+
 #include <string.h>
+#include "hardware/pio.h"
 
 /*
-TODO
-   x - test all 4 resolutions: qvga with 2x2 binning is not worth it, except for fame buffer size
+TODO:
+   - support 4 bit bus mode
 
-   - insert the architecture ifdef's like in the PicoEncoder
-
-   x - keep track of the object state: not initted, stopped, streaming, capturing
-     x - make sure the functions only try to do things in the right states
+   - change the start_capture function to move the "wait for sync" loop to the
+     PIO and restart the PIO code. That way the function can return immediately,
+     even if it's in the middle of a frame
 */
 
 
@@ -143,12 +147,12 @@ private:
 	bool binning_2x2;
 
 	// RP2040 resources
-	uint data_pio_idx;
+	PIO data_pio;
 	uint data_pio_sm;
 	uint data_pio_offset;
 	uint dma_channel;
 
-	uint clock_pio_idx;
+	PIO clock_pio;
 	uint clock_pio_sm;
 	uint clock_pio_offset;
 
@@ -170,5 +174,9 @@ private:
 
 	void arducam_regs_write(const sensor_reg *camera_regs, int count);
 };
+
+#else // ARCH
+#error PicoEncoder library requires a PIO peripheral and only works on the RP2040 architecture
+#endif
 
 #endif
