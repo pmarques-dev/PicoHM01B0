@@ -191,8 +191,6 @@ void PicoHM01B0::calc_optimal_length(void)
 	int clocks_per_frame, max_line_count;
 	int best_diff, best_lc, best_ll;
 
-	// frame period = (cam_line_count - v_advance (=1)) * (cam_line_length - h_advance (=2)) * (1/33MHz)
-
 	if (binning_2x2) {
 		min_line_length = 215;
 		//min_line_count = qvga_mode ? 128 : 172;  // 172 not in datasheet, measured...
@@ -393,6 +391,10 @@ void PicoHM01B0::arducam_regs_write(const sensor_reg *camera_regs, int count)
 
 int PicoHM01B0::begin(const PicoHM01B0_config &config)
 {
+	// begin can only be called once at startup
+	if (state != STATE_RESET)
+		return 0;
+
 	// the object stores the pio numbers and not instances, so we just need
 	// temporary instances in this function
 	PIO clock_pio, data_pio;
@@ -433,11 +435,18 @@ int PicoHM01B0::begin(const PicoHM01B0_config &config)
 
 	arducam_regs_write(camera_reset_regs, sizeof(camera_reset_regs) / sizeof(sensor_reg));
 
+	state = STATE_BEGIN;
+
 	return 1;
 }
 
 void PicoHM01B0::set_fixed_exposure(float exposure_ms, int d_gain, int a_gain)
 {
+	// we can only set the exposure after we know the timings set when we
+	// start streaming
+	if (state < STATE_STREAMING)
+		return;
+
 	int exp_lines = line_count * (exposure_ms * actual_frame_rate / 1000.0);
 
 	if (exp_lines > (int)(line_count - 2))
@@ -473,6 +482,11 @@ void PicoHM01B0::set_auto_exposure(void)
 
 void PicoHM01B0::start_streaming(float frame_rate, bool binning_2x2, bool qvga_mode)
 {
+	// if we are already streaming or capturing a frame, we can not start
+	// again
+	if (state >= STATE_STREAMING)
+		return;
+
 	this->frame_rate = frame_rate;
 	this->binning_2x2 = binning_2x2;
 	this->qvga_mode = qvga_mode;
@@ -488,16 +502,29 @@ void PicoHM01B0::start_streaming(float frame_rate, bool binning_2x2, bool qvga_m
 	int timeout = 10000000UL;
 	while (gpio_get(config.vsync_gpio) == false && timeout)
 		timeout--;
+
+	state = STATE_STREAMING;
 }
 
 void PicoHM01B0::stop_streaming(void)
 {
-	//TODO: keep track of current state (streaming, capturing, ...) don't stop streaming if not appropriate
+	// we can only stop streaming, if we have started streaming and are not
+	// capturing a frame right now
+	if (state != STATE_STREAMING)
+		return;
+
 	i2c_write_reg(0x0100, 0x00); // mode: standby
+
+	state = STATE_BEGIN;
 }
 
 void PicoHM01B0::start_capture(uint8_t *dest)
 {
+	// we can only capture a frame, if we have started streaming and are not
+	// capturing a frame right now
+	if (state != STATE_STREAMING)
+		return;
+
 	// the full frame size is always a multiple of 4 bytes, so we transfer
 	// 32 bits at a time to make better use of the bus
 	const uint32_t image_buf_size = (get_rows() * get_cols()) / 4;
@@ -517,12 +544,20 @@ void PicoHM01B0::start_capture(uint8_t *dest)
 
 	dma_channel_start(dma_channel);
 	pio_sm_set_enabled(data_pio, data_pio_sm, true);
+
+	state = STATE_CAPTURING;
 }
 
 void PicoHM01B0::wait_for_frame(void)
 {
+	// we can only wait for a frame if we are capturing one
+	if (state != STATE_CAPTURING)
+		return;
+
 	// wait for DMA to finish
 	dma_channel_wait_for_finish_blocking(dma_channel);
 	// disable the image transfer PIO
 	pio_sm_set_enabled(PIO_INSTANCE(data_pio_idx), data_pio_sm, false);
+
+	state = STATE_STREAMING;
 }

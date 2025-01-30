@@ -5,12 +5,12 @@
 
 /*
 TODO
+   x - test all 4 resolutions: qvga with 2x2 binning is not worth it, except for fame buffer size
+
    - insert the architecture ifdef's like in the PicoEncoder
 
-   - test all 4 resolutions
-
-   - keep track of the object state: not initted, stopped, streaming, capturing
-     - make sure the functions only try to do things in the right states
+   x - keep track of the object state: not initted, stopped, streaming, capturing
+     x - make sure the functions only try to do things in the right states
 */
 
 
@@ -111,7 +111,21 @@ public:
 		return line_count;
 	}
 
+	PicoHM01B0() {
+		state = STATE_RESET;
+	}
+
 private:
+	enum state_t {
+		STATE_RESET = 0,
+		STATE_BEGIN = 1,
+		STATE_STREAMING = 2,
+		STATE_CAPTURING = 3,
+	};
+
+	// variable that keeps track of the current state
+	state_t state;
+
 	// current active configuration
 	PicoHM01B0_config config;
 
