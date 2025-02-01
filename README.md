@@ -52,7 +52,7 @@ void start_capture(uint8_t *dest);
 ```
 Start capturing a frame. The function returns immediately, but the PIO code waits for the vertical sync to start capturing and then uses DMA to do the actual transfer, so the mcu is free to run other code while the frame is being transferred.
 
-If the code is in a loop calling wait_for_frame, do some processing and call start_capture again, if the processing takes less time than the vertical blanking time, the full frame rate is achieved. Otherwise, if by the time start_capture is called hte frame has already started, it will wait for the next frame, thus dropping a frame, effectively reducing the frame rate.
+If the code is in a loop calling wait_for_frame, do some processing and call start_capture again, if the processing takes less time than the vertical blanking time, the full frame rate is achieved. Otherwise, if by the time start_capture is called the frame has already started, it will wait for the next frame, thus dropping a frame, effectively reducing the frame rate.
 
 Alternatively, if there are 2 buffers, the code can alternate between them and as soon as wait_for_frame returns for buffer 0 start capture can be immediately called for buffer 1 while buffer 0 is being processed.
 

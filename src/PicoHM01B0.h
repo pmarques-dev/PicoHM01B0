@@ -137,11 +137,19 @@ private:
 	float frame_rate;
 	float actual_frame_rate;
 
+	// internal clock divisor selected
+	int clock_div;
+
 	// image resolution controls:
 	// drop 80 lines to get 324x244 (or half in binning_2x2 is true)
 	bool qvga_mode;
 	// half resolution on both axis for 164x162 (or 164x122 in qvga_mode)
 	bool binning_2x2;
+
+	// keep track of current exposure settings to avoid wasting time setting
+	// registers that don't need to be set
+	bool exp_auto;
+	int exp_lines, exp_analog_gain, exp_digital_gain;
 
 	// RP2040 resources
 	PIO data_pio;
@@ -160,6 +168,9 @@ private:
 	// this method computes the settings for line length and line count to
 	// achieve the closest frame rate to the one requested
 	void calc_optimal_length(void);
+
+	// set config.mclk_freq and clock divisor vars
+	void set_clock_vars(void);
 
 	// the camera code only uses i2c for initialization, se we just do a
 	// bit-bang i2c to allow full flexibility in the pin selection

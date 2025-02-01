@@ -217,12 +217,7 @@ void PicoHM01B0::calc_optimal_length(void)
 		//min_line_count = qvga_mode ? 260 : 340; // min measured 340
 	}
 
-	// if we have a MCLK pin, it means we are generating the clock and it's
-	// 1/4 of the main clock
-	if (config.mclk_gpio >= 0)
-		config.mclk_freq = clock_get_hz(clk_sys) / 4;
-
-	clocks_per_frame = (config.mclk_freq / 8) / frame_rate;
+	clocks_per_frame = (config.mclk_freq / clock_div) / frame_rate;
 
 	max_line_count = (clocks_per_frame + min_line_length - 1) / min_line_length;
 
@@ -251,7 +246,7 @@ void PicoHM01B0::calc_optimal_length(void)
 	line_length = best_ll;
 	line_count = best_lc;
 
-	actual_frame_rate = (float) (config.mclk_freq / 8) / (best_ll * best_lc);
+	actual_frame_rate = (float) (config.mclk_freq / clock_div) / (best_ll * best_lc);
 }
 
 
@@ -388,6 +383,9 @@ void PicoHM01B0::arducam_regs_write(const sensor_reg *camera_regs, int count)
 		case 0x0383:	// readout X full
 		case 0x0387: value = binning_2x2 ? 0x03 : 0x01; break;	// readout Y full
 		case 0x0390: value = binning_2x2 ? 0x03 : 0x00; break;	// binning
+
+		case 0x3059: value = config.bus_4bit ? 0x42 : 0x22; break; // serial 1-bit / 4-bit mode
+		case 0x3060: value = 0x20 + (clock_div < 8) + (clock_div < 4); break; // vt_sys_div clock_div, vt_reg_div 4, lsb first, gated clock
 		}
 
 		// actually send the data on the i2c bus
@@ -404,6 +402,24 @@ void PicoHM01B0::arducam_regs_write(const sensor_reg *camera_regs, int count)
 }
 
 
+void PicoHM01B0::set_clock_vars(void)
+{
+	// if we have a MCLK pin, it means we are generating the clock and the
+	// IO code generates a fixed clock that is 1/4 of the main clock
+	if (config.mclk_gpio >= 0)
+		config.mclk_freq = clock_get_hz(clk_sys) / 4;
+
+	// the internal clock must be below 6MHz, so clocks above 24MHz must be
+	// divided by 8 as 4 is not sufficient. Also, for serial 1-bit mode the
+	// divisor must be 8, no matter what the clock is
+	if ((config.mclk_freq > 24000000) || (!config.bus_4bit))
+		clock_div = 8;
+	else if (config.mclk_freq > 12000000)
+		clock_div = 4;
+	else
+		clock_div = 2;
+}
+
 int PicoHM01B0::begin(const PicoHM01B0_config &config)
 {
 	// begin can only be called once at startup
@@ -412,6 +428,9 @@ int PicoHM01B0::begin(const PicoHM01B0_config &config)
 
 	// save a copy of the configuration
 	this->config = config;
+
+	// we only need the config to set the clock vars
+	set_clock_vars();
 
 	// setup a master clock, if the hardware doesn't provide one
 	if (config.mclk_gpio >= 0) {
@@ -448,6 +467,14 @@ int PicoHM01B0::begin(const PicoHM01B0_config &config)
 
 	arducam_regs_write(camera_reset_regs, sizeof(camera_reset_regs) / sizeof(sensor_reg));
 
+	// default registers set auto-exposure (and we don't know the state of
+	// the fixed exposure regs)
+	exp_auto = true;
+	exp_lines = -1;
+	exp_analog_gain = -1;
+	exp_digital_gain = -1;
+
+	// update the state
 	state = STATE_BEGIN;
 
 	return 1;
@@ -455,42 +482,70 @@ int PicoHM01B0::begin(const PicoHM01B0_config &config)
 
 void PicoHM01B0::set_fixed_exposure(float exposure_ms, int d_gain, int a_gain)
 {
+	bool something_changed = false;
+
 	// we can only set the exposure after we know the timings set when we
 	// start streaming
 	if (state < STATE_STREAMING)
 		return;
 
-	int exp_lines = line_count * (exposure_ms * actual_frame_rate / 1000.0);
+	// this function can be called frequently by the code while it is
+	// streaming, so keep track of what has already been written to the
+	// camera chip's records and avoid wasting time writing the same values
 
-	if (exp_lines > (int)(line_count - 2))
-		exp_lines = line_count - 2;
-	if (exp_lines < 2)
-		exp_lines = 2;
+	if (exp_auto) {
+		i2c_write_reg(0x2100, 0x00); // AE disable
+		exp_auto = false;
+		something_changed = true;
+	}
+
+	int lines = line_count * (exposure_ms * actual_frame_rate / 1000.0);
+	if (lines > (int)(line_count - 2))
+		lines = line_count - 2;
+	if (lines < 2)
+		lines = 2;
+	if (lines != exp_lines) {
+		if ((lines >> 8) != (exp_lines >> 8))
+			i2c_write_reg(0x0202, lines >> 8); // integration time high
+		if ((lines & 0xFF) != (exp_lines & 0xFF))
+			i2c_write_reg(0x0203, lines & 0xFF); // integration time low
+		exp_lines = lines;
+		something_changed = true;
+	}
 
 	if (a_gain < 0)
 		a_gain = 0;
 	if (a_gain > 7)
 		a_gain = 7;
+	if (exp_analog_gain != a_gain) {
+		i2c_write_reg(0x0205, a_gain << 4);
+		exp_analog_gain = a_gain;
+		something_changed = true;
+	}
 
 	if (d_gain < 1)
 		d_gain = 1;
 	if (d_gain > 255)
 		d_gain = 255;
+	if (exp_digital_gain != d_gain) {
+		if ((d_gain >> 6) != (exp_digital_gain >> 6))
+			i2c_write_reg(0x020E, d_gain >> 6);
+		if (((d_gain << 2) & 0xFF) != ((exp_digital_gain << 2) & 0xFF))
+			i2c_write_reg(0x020F, d_gain << 2);
+		exp_digital_gain = a_gain;
+		something_changed = true;
+	}
 
-	i2c_write_reg(0x2100, 0x00); // AE disable
-
-	i2c_write_reg(0x0202, exp_lines >> 8); // integration time high
-	i2c_write_reg(0x0203, exp_lines & 0xff); // integration time low
-	i2c_write_reg(0x0205, a_gain << 4);
-	i2c_write_reg(0x020E, d_gain >> 6);
-	i2c_write_reg(0x020F, d_gain << 2);
-
-	i2c_write_reg(0x0104, 0x01); // group parameter hold(?)
+	if (something_changed)
+		i2c_write_reg(0x0104, 0x01); // group parameter hold(?)
 }
 
 void PicoHM01B0::set_auto_exposure(void)
 {
+	if (exp_auto)
+		return;
 	i2c_write_reg(0x2100, 0x01); // AE enable
+	exp_auto = true;
 }
 
 void PicoHM01B0::start_streaming(float frame_rate, bool binning_2x2, bool qvga_mode)
